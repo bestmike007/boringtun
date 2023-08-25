@@ -1,12 +1,10 @@
 name: PR Status Checks
 env:
   # https://github.com/rust-lang/rust/issues/113104
-  RUST_VERSION: 1.69.0
+  RUST_VERSION: 1.72.0
 
 on:
-  push:
-    branches: [ "master" ]
-    tags: ['*']
+  push: {}
   pull_request:
     branches: [ "master" ]
 
