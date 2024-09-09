@@ -1,7 +1,4 @@
 name: PR Status Checks
-env:
-  # https://github.com/rust-lang/rust/issues/113104
-  RUST_VERSION: 1.69.0
 
 on:
   push:
@@ -104,76 +101,40 @@ jobs:
 
   release:
     needs: [tests, integration-tests]
-    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
-        binary:
-          - workspace: .
-            name: boringtun-cli
         arch:
-          - amd64
-          - aarch64
+          - target: x86_64-unknown-linux-gnu
+            name: amd64
+          - target: aarch64-unknown-linux-gnu
+            name: aarch64
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          submodules: true
-      - name: Setup QEMU
-        if: matrix.arch != 'amd64'
-        run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-      - name: Setup Rust
+        uses: actions/checkout@v4
+      - name: Install Rust with Cross
+        shell: bash
         run: |
-          rm -rf ~/.cargo
-          docker run -d --name=init \
-            -v $PWD/${{ matrix.binary.workspace }}:/repo/ -w /repo \
-            ghcr.io/innopals/rust-centos7:$RUST_VERSION-${{ matrix.arch }} \
-            tail -f /etc/issue
-          # Initial cargo installation to be cached
-          docker cp init:/root/.cargo ~/.cargo
-          mkdir -p ${HOME}/.local/bin
-          # Use cargo & rustc in the container to obtain rust version and to clean up artifacts
-          cd ${HOME}/.local/bin
-          echo '#!/bin/bash' > rustc
-          echo 'docker exec init rustc $@' > rustc
-          echo '#!/bin/bash' > cargo
-          echo 'docker exec init cargo $@' > cargo
-          chmod +x *
-          rustc -vV
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain none -y
+          rustup toolchain install stable --profile minimal
+          rustup target add ${{ matrix.arch.target }}
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall --no-confirm cross
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.binary.workspace }}/${{ matrix.binary.name }}-${{ matrix.arch }}
+          key: ${{ matrix.arch.target }}
           cache-on-failure: true
-          workspaces: ${{ matrix.binary.workspace }} -> target
-      - name: Start Build Container
+      - name: Build Binary
         run: |
-          docker run -d --name=build \
-            -v $PWD/${{ matrix.binary.workspace }}:/repo/ -v $HOME/.cargo:/root/.cargo -w /repo \
-            ghcr.io/innopals/rust-centos7:$RUST_VERSION-${{ matrix.arch }} \
-            tail -f /etc/issue
-      - name: Build Artifacts
-        run: |
-          docker exec build bash -c 'set -e
-            cargo build --release --bin=${{ matrix.binary.name }}
-            strip target/release/${{ matrix.binary.name }}
-            cp target/release/${{ matrix.binary.name }} target/release/${{ matrix.binary.name }}-${{ matrix.arch }}
-          '
-      - name: Amend File Permissions
-        run: |
-          sudo chown -R runner:docker ${{ matrix.binary.workspace }}/target
-          sudo chown -R runner:docker $HOME/.cargo
-      - name: Publish Artifacts
+          cross build --verbose --locked --release --target ${{ matrix.arch.target }}
+          mv target/${{ matrix.arch.target }}/release/boringtun-cli target/${{ matrix.arch.target }}/release/boringtun-cli-${{ matrix.arch.name }}
+      - name: publish artifacts
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-            files: |
-              ${{ matrix.binary.workspace }}/target/release/${{ matrix.binary.name }}-${{ matrix.arch }}
-      - name: Draft Artifacts
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: softprops/action-gh-release@v1
-        with:
-            draft: true
-            name: "latest"
-            tag_name: "latest"
-            files: |
-              ${{ matrix.binary.workspace }}/target/release/${{ matrix.binary.name }}-${{ matrix.arch }}
+          files: |
+            target/${{ matrix.arch.target }}/release/boringtun-cli-${{ matrix.arch.name }}
